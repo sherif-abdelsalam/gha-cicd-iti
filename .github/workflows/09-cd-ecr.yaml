@@ -12,6 +12,7 @@ env:
   # These are example placeholders only.
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  CONTAINER_NAME: "tiny-helth-app"
   IMAGE_NAME: tiny-health-app
   APP_PORT: "8000"
   
@@ -117,6 +118,7 @@ jobs:
               -p "${APP_PORT}:8000" \
               "$IMAGE_REF"
 
+
             # Wait for /health
             for attempt in 1 2 3 4 5; do
               if curl --fail --silent "http://127.0.0.1:${APP_PORT}/health"; then
@@ -131,5 +133,5 @@ jobs:
         env:
           IMAGE_REF: ${{ needs.build-and-push-image.outputs.image_ref }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          CONTAINER_NAME: "tiny-health-app"
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME}}
           APP_PORT: ${{ env.APP_PORT }}
