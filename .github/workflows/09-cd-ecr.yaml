@@ -35,18 +35,26 @@ jobs:
     # After CI passes, package the app and push the image to ECR.
     needs: verify
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: "${{ steps.image-tag.outputs.value }}"
+      image_ref: "${{ steps.image-ref.outputs.value }}"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Set image tag
-        # Use today's UTC date plus the GitHub run ID.
         id: image-tag
         run: |
           TODAY="$(date -u +%Y-%m-%d)"
           IMAGE_TAG="${TODAY}-${GITHUB_RUN_ID}"
-          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+          echo "value=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create full image reference
+        id: image-ref
+        run: |
+          IMAGE_REF="${ECR_REGISTRY}/${IMAGE_NAME}:${{ steps.image-tag.outputs.value }}"
+          echo "value=$IMAGE_REF" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS credentials
         # In a real project, these values would come from GitHub secrets.
@@ -71,6 +79,56 @@ jobs:
         run: |
           docker buildx build \
             --push \
-            --tag "${ECR_REGISTRY}/${IMAGE_NAME}:${{ steps.image-tag.outputs.image_tag }}" \
+            --tag "${{ steps.image-ref.outputs.value }}" \
             --tag "${ECR_REGISTRY}/${IMAGE_NAME}:latest" \
             .
+
+  deploy-to-ec2:
+    name: Deploy to EC2
+    needs: build-and-push-image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: IMAGE_REF,AWS_REGION,CONTAINER_NAME,APP_PORT
+          script: |
+            # Login to ECR
+            aws ecr get-login-password --region "$AWS_REGION" | \
+              docker login --username AWS --password-stdin \
+              $(echo "$IMAGE_REF" | cut -d/ -f1)
+
+            # Pull exact image
+            docker pull "$IMAGE_REF"
+
+            # Replace old container
+            docker stop "$CONTAINER_NAME" || true
+            docker rm "$CONTAINER_NAME" || true
+
+            # Run new container
+            docker run -d \
+              --name "$CONTAINER_NAME" \
+              --restart unless-stopped \
+              -p "${APP_PORT}:8000" \
+              "$IMAGE_REF"
+
+            # Wait for /health
+            for attempt in 1 2 3 4 5; do
+              if curl --fail --silent "http://127.0.0.1:${APP_PORT}/health"; then
+                echo "App is ready."
+                exit 0
+              fi
+              echo "Waiting... attempt $attempt"
+              sleep 3
+            done
+            docker logs "$CONTAINER_NAME"
+            exit 1
+        env:
+          IMAGE_REF: ${{ needs.build-and-push-image.outputs.image_ref }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
+          APP_PORT: ${{ env.APP_PORT }}
