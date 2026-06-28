@@ -100,6 +100,11 @@ jobs:
           envs: IMAGE_REF,AWS_REGION,CONTAINER_NAME,APP_PORT
           script: |
             # Login to ECR
+
+            echo "IMAGE_REF=$IMAGE_REF"
+            echo "AWS_REGION=$AWS_REGION"
+            echo "CONTAINER_NAME=$CONTAINER_NAME"
+
             aws ecr get-login-password --region "$AWS_REGION" | \
               docker login --username AWS --password-stdin \
               $(echo "$IMAGE_REF" | cut -d/ -f1)
