@@ -12,10 +12,10 @@ env:
   # These are example placeholders only.
   AWS_REGION: ${{ secrets.AWS_REGION }}
   ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
-  CONTAINER_NAME: "tiny-helth-app"
+  CONTAINER_NAME: "tiny-health-app"
   IMAGE_NAME: tiny-health-app
   APP_PORT: "8000"
-  
+
 jobs:
   verify:
     # CI still starts by checking whether the change is safe.
@@ -37,29 +37,12 @@ jobs:
     # After CI passes, package the app and push the image to ECR.
     needs: verify
     runs-on: ubuntu-latest
-    outputs:
-      image_tag: "${{ steps.image-tag.outputs.value }}"
-      image_ref: "${{ steps.image-ref.outputs.value }}"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set image tag
-        id: image-tag
-        run: |
-          TODAY="$(date -u +%Y-%m-%d)"
-          IMAGE_TAG="${TODAY}-${GITHUB_RUN_ID}"
-          echo "value=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Create full image reference
-        id: image-ref
-        run: |
-          IMAGE_REF="${ECR_REGISTRY}/${IMAGE_NAME}:${{ steps.image-tag.outputs.value }}"
-          echo "value=$IMAGE_REF" >> "$GITHUB_OUTPUT"
-
       - name: Configure AWS credentials
-        # In a real project, these values would come from GitHub secrets.
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -67,21 +50,15 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to ECR
-        # Exchange AWS credentials for a temporary ECR token.
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Set up Docker Buildx
-        # buildx is a common way to build and push images in one step.
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push image with Docker Buildx
-        # Two tags are pushed:
-        # - one traceable run tag
-        # - one latest tag for easy reference
+      - name: Build and push image
         run: |
           docker buildx build \
             --push \
-            --tag "${{ steps.image-ref.outputs.value }}" \
             --tag "${ECR_REGISTRY}/${IMAGE_NAME}:latest" \
             .
 
@@ -97,20 +74,19 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: IMAGE_REF,AWS_REGION,CONTAINER_NAME,APP_PORT
+          envs: ECR_REGISTRY,IMAGE_NAME,AWS_REGION,CONTAINER_NAME,APP_PORT
           script: |
-            # Login to ECR
-
-            echo "IMAGE_REF=$IMAGE_REF"
+            echo "=== Debug ==="
+            echo "IMAGE=${ECR_REGISTRY}/${IMAGE_NAME}:latest"
             echo "AWS_REGION=$AWS_REGION"
             echo "CONTAINER_NAME=$CONTAINER_NAME"
 
+            # Login to ECR
             aws ecr get-login-password --region "$AWS_REGION" | \
-              docker login --username AWS --password-stdin \
-              $(echo "$IMAGE_REF" | cut -d/ -f1)
+              docker login --username AWS --password-stdin "$ECR_REGISTRY"
 
-            # Pull exact image
-            docker pull "$IMAGE_REF"
+            # Pull latest image
+            docker pull "${ECR_REGISTRY}/${IMAGE_NAME}:latest"
 
             # Replace old container
             docker stop "$CONTAINER_NAME" || true
@@ -121,8 +97,7 @@ jobs:
               --name "$CONTAINER_NAME" \
               --restart unless-stopped \
               -p "${APP_PORT}:8000" \
-              "$IMAGE_REF"
-
+              "${ECR_REGISTRY}/${IMAGE_NAME}:latest"
 
             # Wait for /health
             for attempt in 1 2 3 4 5; do
@@ -136,7 +111,8 @@ jobs:
             docker logs "$CONTAINER_NAME"
             exit 1
         env:
-          IMAGE_REF: ${{ needs.build-and-push-image.outputs.image_ref }}
+          ECR_REGISTRY: ${{ env.ECR_REGISTRY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
           AWS_REGION: ${{ secrets.AWS_REGION }}
-          CONTAINER_NAME: ${{ env.CONTAINER_NAME}}
+          CONTAINER_NAME: ${{ env.CONTAINER_NAME }}
           APP_PORT: ${{ env.APP_PORT }}
